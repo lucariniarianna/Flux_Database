@@ -1,0 +1,35 @@
+library(dplyr)
+library(lubridate)
+install.packages("slider")
+library(slider)
+
+tmp_plus_fluxes <- tmp %>%
+  cross_join(fluxes_mod, suffix = c(".tmp", ".sat")) %>%
+  group_by(time) %>%
+  mutate(
+    gpp_moving_avg = slider::slide_dbl(
+      .x = GPP_DT_VUT_REF,
+      .before = 3 * 48,   # 3 giorni prima
+      .after = 3 * 48,    # 3 giorni dopo
+      .f = ~ mean(.x, na.rm = TRUE)
+    ),
+    time_diff = abs(difftime(time, date, units = "secs")),
+    closest_gpp = ifelse(time_diff <= 3*24*60*60, gpp_moving_avg, NA),
+    closest_gpp_weight = ifelse(time_diff <= 3*24*60*60, time_diff/(3*24*60*60), NA),
+    
+  ) %>%
+  ungroup()
+# number of observations
+sum(!is.na(tmp_plus_fluxes$closest_gpp))
+
+summary(tmp_plus_fluxes)
+
+# dropping variables with full NA
+
+final_comparison_df <- tmp_plus_fluxes %>% 
+  select(!c(PPFD_IN, PPFD_DIF, PPFD_OUT)) %>% 
+  drop_na(closest_gpp)
+
+final_comparison_df$closest_gpp_weight %>% hist()
+
+    
