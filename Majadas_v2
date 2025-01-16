@@ -1,0 +1,107 @@
+library(tidyverse)
+
+vis_results <- read_csv("/Net/Groups/BGI/scratch/alucarini/tmp_dataframe_lma.csv")
+
+tmp = vis_results %>% 
+  filter(stats %in% c("n_point", "n_point_max", "median_vi_point")) %>% 
+  select(!c("area_radius", "distance_tower")) %>%   
+  group_by(time) %>% 
+  filter(cir[1] >= cir[2]) %>% 
+  ungroup()
+
+tmp = tmp %>% 
+  group_by(time, point_radius, stats, cir, ndvi, ndwi, nirv, evi, site) %>% 
+  summarise() %>% 
+  ungroup()
+
+tmp <- tmp %>% 
+  filter(stats == "median_vi_point") %>% 
+  select(!stats)
+
+tmp_filled <- tmp %>% 
+  slice(rep(1:n(), each = 48))
+
+fluxes <- read_csv("/Net/Groups/BGI/scratch/alucarini/merged_filtered_data.csv")
+format <- "%Y%m%d%H%M%S"
+
+
+# Convert the character string to a POSIXct object
+
+
+fluxes_mod <- fluxes %>% 
+  filter(Site_ID == "ES-LMa") %>% 
+  mutate(date = ymd_hm(as.character(TIMESTAMP_START))) %>%
+  mutate(date_index = date(date))
+
+
+looking_for_date_closets_var <- function(x="col_name_date",y, df, var_name = "GPP_DT_VUT_REF"){
+  if(is.element(as.character(date(y)),as.character(date(df[,x][[1]])))){
+    # look the positions for the date
+    local_df <- df[as.character(date(df[,x][[1]])) == as.character(date(y)), ]
+    if(all(is.na(local_df[,var_name]))){
+      return(list(NA, NA))
+    }else{
+      distance_tmp <- abs(difftime(local_df[,x][[1]], y))
+      result <- list(var = local_df[which.min(distance_tmp), var_name][[1]], date_var =  local_df[which.min(distance_tmp), x][[1]])
+      return(result)
+    }
+  }else{
+    return(list(NA, NA))
+  }
+}
+
+
+
+# half hourly (closets observation from satellite) data added to the VIs.
+vis_plus_gpp_perfect_match <- tmp %>% 
+  group_by(time, point_radius) %>% 
+  mutate(gpp_half_h = looking_for_date_closets_var(x = "date", y = unique(time), df = fluxes_mod, var_name = "GPP_DT_VUT_REF")[[1]]) %>%
+  mutate(gpp_half_h_date = looking_for_date_closets_var(x = "date", y = unique(time), df = fluxes_mod, var_name = "GPP_DT_VUT_REF")[[2]]) %>%
+  mutate(ppft = looking_for_date_closets_var(x = "date", y = unique(time), df = fluxes_mod, var_name = "PPFD_IN_df2")[[1]]) %>%
+  mutate(ppft_date = looking_for_date_closets_var(x = "date", y = unique(time), df = fluxes_mod, var_name = "PPFD_IN_df2")[[2]]) %>%
+  ungroup()
+#mutate(gpp_half_date = looking_for_date_closets_date(date(fluxes_mod$date), unique(time))) %>% 
+#ungroup()
+
+
+# in case you want to refine even more the data and only consider and ob with no more 30 minutes difference.
+
+vis_plus_gpp_perfect_match_filtered <- vis_plus_gpp_perfect_match %>% 
+  mutate(diff_time = abs(vis_plus_gpp_perfect_match$time - vis_plus_gpp_perfect_match$gpp_half_date)) %>% 
+  filter(diff_time<=30)
+
+
+
+library(dplyr)
+library(lubridate)
+install.packages("slider")
+library(slider)
+
+tmp_plus_fluxes <- tmp %>%
+  cross_join(fluxes_mod, suffix = c(".tmp", ".sat")) %>%
+  group_by(time) %>%
+  mutate(
+    gpp_moving_avg = slider::slide_dbl(
+      .x = GPP_DT_VUT_REF,
+      .before = 3 * 48,   # 3 giorni prima
+      .after = 3 * 48,    # 3 giorni dopo
+      .f = ~ mean(.x, na.rm = TRUE)
+    ),
+    time_diff = abs(difftime(time, date, units = "secs")),
+    closest_gpp = ifelse(time_diff <= 3*24*60*60, gpp_moving_avg, NA),
+    closest_gpp_weight = ifelse(time_diff <= 3*24*60*60, time_diff/(3*24*60*60), NA),
+    
+  ) %>%
+  ungroup()
+# number of observations
+sum(!is.na(tmp_plus_fluxes$closest_gpp))
+
+summary(tmp_plus_fluxes)
+
+# dropping variables with full NA
+
+final_comparison_df <- tmp_plus_fluxes %>% 
+  select(!c(PPFD_IN, PPFD_DIF, PPFD_OUT)) %>% 
+  drop_na(closest_gpp)
+
+final_comparison_df$closest_gpp_weight %>% hist()
