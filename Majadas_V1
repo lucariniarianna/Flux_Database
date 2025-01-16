@@ -1,0 +1,50 @@
+# Con questo carichi il file, selezioni le colonne di interesse, e fai il gpp normalizzato
+
+load(file="/Net/Groups/BGI/data/MajadasEddyCovariance/processed//Main/All_Years/Flux_AND_Meteo/LMAM_GFFP.RData" )
+
+gpp_majadas <- LMAM_GFFP[, c(1,130, 569,570,574,576,581,582,586,588,593,594,601,602,609,610,617,618,621,623,625,627,629,631,654,656)]
+colnames(gpp_majadas)[colnames(gpp_majadas) == "rDate"] <- "time"
+
+gpp_majadas$GPP_norm <- gpp_majadas$GPP_DT_uStar / gpp_majadas$PAR_in
+
+# Con questo aggiungi gli inidici di vegetazione
+
+vis_results <- read_csv("/Net/Groups/BGI/scratch/alucarini/tmp_dataframe_lma.csv")
+
+tmp = vis_results %>% 
+  filter(stats %in% c("n_point", "n_point_max", "median_vi_point")) %>% 
+  select(!c("area_radius", "distance_tower")) %>%   
+  group_by(time) %>% 
+  filter(cir[1] >= cir[2]) %>% 
+  ungroup()
+
+tmp = tmp %>% 
+  group_by(time, point_radius, stats, cir, ndvi, ndwi, nirv, evi, site) %>% 
+  summarise() %>% 
+  ungroup()
+
+tmp <- tmp %>% 
+  filter(stats == "median_vi_point") %>% 
+  select(!stats)
+
+tmp_filled <- tmp %>% 
+  slice(rep(1:n(), each = 48))
+
+# Con questo fai la moving windows
+
+tmp_plus_fluxes <- tmp %>%
+  cross_join(gpp_majadas, suffix = c(".tmp", ".sat")) %>%
+  group_by(time) %>%
+  mutate(
+    gpp_moving_avg = slider::slide_dbl(
+      .x = GPP_norm,
+      .before = 3 * 48,   # 3 giorni prima
+      .after = 3 * 48,    # 3 giorni dopo
+      .f = ~ mean(.x, na.rm = TRUE)
+    ),
+    time_diff = abs(difftime(time, date, units = "secs")),
+    closest_gpp = ifelse(time_diff <= 3*24*60*60, gpp_moving_avg, NA),
+    closest_gpp_weight = ifelse(time_diff <= 3*24*60*60, time_diff/(3*24*60*60), NA),
+    
+  ) %>%
+  ungroup()
