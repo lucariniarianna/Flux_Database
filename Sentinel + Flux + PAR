@@ -1,0 +1,158 @@
+# sentinel-2 data
+
+sentinel_2 <- read_csv("/Net/Groups/BGI/scratch/alucarini/tmp_dataframe_lma.csv")
+
+nrow(sentinel_2)
+sentinel_2 %>% View()
+
+sentinel_2 %>% filter(is.na(cir)) %>% print(n=200)
+
+sentinel_2$area_radius %>% unique()
+
+sentinel_2 <- sentinel_2 %>% drop_na()
+
+sentinel_2_mod <- sentinel_2 %>% mutate(time_index = as.character(time)) %>% filter(area_radius %in% c(50, 250, 500), stats == "median_vi_area") %>% select(!point_radius) %>% group_by(time_index, area_radius) %>% 
+  reframe(time = unique(time), cir = unique(cir), ndvi = unique(ndvi), ndwi = unique(ndwi), nirv = unique(nirv), evi = unique(evi)) %>% ungroup()
+
+sentinel_2_mod %>% View()
+
+tmp_sentinel_2 <- sentinel_2_mod %>% pivot_longer(cols = c(cir, ndvi, ndwi, nirv, evi), names_to = "vis", values_to = "value") %>% unite("new_vi",vis,area_radius) 
+
+
+typeof(tmp_sentinel_2$value)
+tmp_sentinel_2 %>% View()
+tmp_sentinel_2 <- tmp_sentinel_2 %>% drop_na()
+
+sentinel_2_f <- pivot_wider(tmp_sentinel_2, names_from = "new_vi", values_from = "value") %>% select(!time_index)
+sentinel_2_f
+
+# fluxes data
+
+fluxes <- read_csv("/Net/Groups/BGI/scratch/alucarini/merged_filtered_data.csv")
+format <- "%Y%m%d%H%M%S"
+
+
+fluxes_mod <- fluxes %>% 
+  filter(Site_ID == "ES-LMa") %>% 
+  mutate(date = ymd_hm(as.character(TIMESTAMP_START))) %>%
+  mutate(date_index = date(date))
+
+hist(fluxes_mod$GPP_DT_VUT_REF)
+
+
+# par data
+
+load(file="/Net/Groups/BGI/data/MajadasEddyCovariance/processed//Main/All_Years/Flux_AND_Meteo/LMAM_GFFP.RData" )
+
+par_majadas <- LMAM_GFFP[, c(1,130)]
+par_majadas$Site_ID <- "ES-LMa"
+as.character(par_majadas$rDate)
+as.character(fluxes_mod$date)
+looking_for_date_closets_var <- function(x="col_name_date",y, df, var_name = "GPP_DT_VUT_REF"){
+  if(is.element(as.character(date(y)), as.character(date(df[,x][[1]])))){
+    # look the positions for the date
+    return(df[as.character(df[,x][[1]]) == as.character(y), var_name][[1]])
+  }else{
+    return(NA)
+  }
+}
+
+as.character(fluxes_mod$date)
+
+is.element(as.character(date(fluxes_mod$date)[1]),as.character(date(par_majadas$rDate)))
+
+which(as.character(date(par_majadas$rDate))=="2020-01-09")
+
+fluxes_plus_PAR <- fluxes_mod %>% group_by(date) %>% 
+  mutate(par = ifelse(is.element(date, par_majadas$rDate), par_majadas$PAR_in[date == par_majadas$rDate], NA)) %>% 
+  ungroup()
+
+fluxes_plus_PAR %>% View()
+
+fluxes_f <- fluxes_plus_PAR %>% mutate(GPP_norm = GPP_DT_VUT_REF / par) %>% 
+  mutate(
+    gpp_moving_avg = slider::slide_dbl(
+      .x = GPP_norm,
+      .before = 3 * 48,   # 3 giorni prima
+      .after = 3 * 48,    # 3 giorni dopo
+      .f = ~ mean(.x, na.rm = TRUE)
+    ),
+    gpp_moving_avg_org = slider::slide_dbl(
+      .x = GPP_DT_VUT_REF,
+      .before = 3 * 48,   # 3 giorni prima
+      .after = 3 * 48,    # 3 giorni dopo
+      .f = ~ mean(.x, na.rm = TRUE)
+    ))
+  
+
+sentinel_2_f <- sentinel_2_f %>% group_by(time) %>% 
+  mutate(
+  time_diff = min(abs(difftime(time, fluxes_f$date, units = "secs"))),
+  closest_gpp = ifelse(time_diff <= 3*24*60*60, fluxes_f$gpp_moving_avg[which.min(abs(difftime(time, fluxes_f$date, units = "secs")))], NA),
+  closest_gpp_org = ifelse(time_diff <= 3*24*60*60, fluxes_f$gpp_moving_avg_org[which.min(abs(difftime(time, fluxes_f$date, units = "secs")))], NA),
+  closest_par = ifelse(time_diff <= 3*24*60*60, fluxes_f$par[which.min(abs(difftime(time, fluxes_f$date, units = "secs")))], NA),
+  closest_gpp_weight = ifelse(time_diff <= 3*24*60*60, time_diff/(3*24*60*60), NA),
+) %>%
+  ungroup()
+
+
+sentinel_2_f %>% View()
+
+plot(sentinel_2_f$cir_50, sentinel_2_f$closest_gpp)
+plot(sentinel_2_f$closest_gpp_org, sentinel_2_f$cir_500)
+plot(sentinel_2_f$cir_50, sentinel_2_f$closest_par)
+hist(sentinel_2_f$closest_par)
+
+hist(sentinel_2_f$closest_gpp_org)
+
+# str(par_majadas$time)
+# str(tmp_plus_fluxes$date)
+# 
+# names(par_majadas)[names(par_majadas) == "time"] <- "date"
+# 
+# 
+# merged_dataset <- merge(par_majadas, tmp_plus_fluxes, by = c("date", "Site_ID"))
+# 
+# merged_dataset$GPP_norm <- merged_dataset$GPP_DT_VUT_REF / merged_dataset$PAR_in
+
+
+
+
+
+################################################################################VIs weighted
+
+final_comparison_df <- final_comparison_df %>%
+  group_by(time) %>%
+  mutate(cir_weighted = cir / closest_gpp_weight) %>%
+  ungroup()
+
+final_comparison_df <- final_comparison_df %>%
+  group_by(time) %>%
+  mutate(ndvi_weighted = ndvi / closest_gpp_weight) %>%
+  ungroup()
+
+final_comparison_df <- final_comparison_df %>%
+  group_by(time) %>%
+  mutate(ndwi_weighted = ndwi / closest_gpp_weight) %>%
+  ungroup()
+
+final_comparison_df <- final_comparison_df %>%
+  group_by(time) %>%
+  mutate(nirv_weighted = nirv / closest_gpp_weight) %>%
+  ungroup()
+
+final_comparison_df <- final_comparison_df %>%
+  group_by(time) %>%
+  mutate(evi_weighted = evi / closest_gpp_weight) %>%
+  ungroup()
+
+ggplot(final_comparison_df, aes(x = ndvi_weighted, y = closest_gpp)) +
+  geom_point(color = "blue", alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, color = "red") +  
+    title = "Scatterplot: Closest GPP vs NDVI Weighted",
+      x = "Closest GPP",
+        y = "NDVI Weighted"
+       ) +
+    theme_minimal()
+
+    
