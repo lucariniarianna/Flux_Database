@@ -1,0 +1,116 @@
+####################  sentinel-2 data ################### 
+
+sentinel_2 <- read_csv("/Net/Groups/BGI/scratch/alucarini/tmp_dataframe_lma.csv")
+
+sentinel_2 %>% View()
+
+sentinel_2 %>% filter(is.na(cir)) %>% print(n=200) #to control NA
+
+sentinel_2$area_radius %>% unique() #to not repeat them 
+sentinel_2 <- sentinel_2 %>% drop_na() #to eliminate NA 
+
+#to sort the dataset 
+sentinel_2_mod <- sentinel_2 %>% mutate(time_index = as.character(time)) %>% filter(area_radius %in% c(50, 250, 500), stats == "median_vi_area") %>% 
+  select(!point_radius) %>% group_by(time_index, area_radius) %>% 
+  reframe(time = unique(time), cir = unique(cir), ndvi = unique(ndvi), ndwi = unique(ndwi), nirv = unique(nirv), evi = unique(evi)) %>% ungroup()
+
+sentinel_2_mod %>% View()
+
+tmp_sentinel_2 <- sentinel_2_mod %>% pivot_longer(cols = c(cir, ndvi, ndwi, nirv, evi), names_to = "vis", values_to = "value") %>% 
+  unite("new_vi",vis,area_radius) 
+
+tmp_sentinel_2 %>% View()
+tmp_sentinel_2 <- tmp_sentinel_2 %>% drop_na()
+
+sentinel_2_f <- pivot_wider(tmp_sentinel_2, names_from = "new_vi", values_from = "value") %>% select(!time_index)
+sentinel_2_f
+
+################### fluxes data ################### 
+
+fluxes <- read_csv("/Net/Groups/BGI/scratch/alucarini/merged_filtered_data.csv")
+format <- "%Y%m%d%H%M%S"
+
+
+fluxes_mod <- fluxes %>% 
+  filter(Site_ID == "ES-LMa") %>% 
+  mutate(date = ymd_hm(as.character(TIMESTAMP_START))) %>%
+  mutate(date_index = date(date))
+
+#################### par data ################### 
+
+load(file="/Net/Groups/BGI/data/MajadasEddyCovariance/processed/North/All_Years/Flux_AND_Meteo/LMAN_GFFP.RData" )
+
+names(LMAN_GFFP)
+par_majadas <- LMAN_GFFP[, c(1,145)]
+par_majadas$Site_ID <- "ES-LMa"
+as.character(par_majadas$rDate)
+as.character(fluxes_mod$date)
+
+looking_for_date_closets_var <- function(x="col_name_date",y, df, var_name = "GPP_DT_VUT_REF"){
+  if(is.element(as.character(date(y)), as.character(date(df[,x][[1]])))){
+    # look the positions for the date
+    return(df[as.character(df[,x][[1]]) == as.character(y), var_name][[1]])
+  }else{
+    return(NA)
+  }
+}
+
+plot(par_majadas$PARd)
+as.character(fluxes_mod$date)
+
+is.element(as.character(date(fluxes_mod$date)[1]),as.character(date(par_majadas$rDate)))
+
+which(as.character(date(par_majadas$rDate))=="2020-01-09")
+
+#aggiungere par ai flussi
+fluxes_plus_PAR <- fluxes_mod %>% group_by(date) %>% 
+ mutate(par = ifelse(is.element(date, par_majadas$rDate), par_majadas$PARd[date == par_majadas$rDate], NA)) %>% 
+  ungroup()
+
+fluxes_plus_PAR %>% View()
+
+fluxes_f <- fluxes_plus_PAR %>% mutate(GPP_norm = GPP_DT_VUT_REF / par) 
+
+fluxes_f_subset <- fluxes_f %>%
+  select(date, par, GPP_norm)
+
+unified_data <- sentinel_2_f %>%
+  rowwise() %>%
+  mutate(
+    associated_fluxes = list(
+      fluxes_f_subset %>%
+        filter(abs(difftime(date, time, units = "days")) <= 3) %>% # Seleziona ±3 giorni
+        mutate(
+          time_diff = abs(difftime(date, time, units = "secs")),  # Differenza temporale in secondi
+          weight = 1 - (time_diff / (3 * 24 * 60 * 60))           # Peso decrescente
+        ) %>%
+        filter(weight > 0)  # Considera solo i dati validi (pesi positivi)
+    )
+  ) %>%
+  unnest(cols = associated_fluxes) %>% # Espande la lista in righe
+  ungroup()
+###################################### UP TO HERE IS WORKING!!!!! #########################
+
+library(ggplot2)
+
+# Aggiungi una colonna per la categoria di peso
+unified_data <- unified_data %>%
+  mutate(weight_category = case_when(
+    weight < 0.33 ~ "Low",
+    weight < 0.66 ~ "Medium",
+    TRUE ~ "High"
+  ))
+
+# Crea il plot
+ggplot(unified_data, aes(x = ndvi_50, y = GPP_norm, color = weight_category)) +
+  geom_point(size = 3, alpha = 0.7) +  # Punti colorati per categoria di peso
+  geom_smooth(method = "lm", se = FALSE, color = "black", linewidth = 1) +  # Linea del modello lineare
+  scale_color_manual(values = c("Low" = "blue", "Medium" = "orange", "High" = "red")) +  # Colori personalizzati
+  labs(
+    title = "Relazione tra cir_50 e GPP_norm",
+    x = "cir_50",
+    y = "GPP_norm",
+    color = "Peso (Weight)"
+  ) +
+  theme_minimal(base_size = 14) +  # Tema pulito
+  theme(legend.position = "top")  # Posizione della legenda
