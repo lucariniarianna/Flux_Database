@@ -1,0 +1,119 @@
+# Import library
+import xarray as xr
+import zarr
+import dask
+
+# Import Dataset
+noe = xr.open_mfdataset('/Net/Groups/BGI/work_3/OEMC/oemc_towers/data/cubes/fluxnet_sentinelhub_tmp/IT-Noe/*.zarr', engine = 'zarr')
+
+# Compute Vegetation Indeces
+ndwi = (noe['B03'] - noe['B08']) / (noe['B03'] + noe['B08'])
+nirv = (ndvi * noe ["B08"]) 
+chlrededge = (noe["B07"]/ noe ["B05"]) -1
+evi = 2.5 * ((noe ["B08"] – noe["B04"]) / (noe["B08"] + 6 * noe["B04"] – 7.5 * noe["B02"] + 1))
+ndvi = (noe['B08'] - noe['B04']) / (noe['B08'] + noe['B04'])
+
+# Explore data
+noe['B08'].sel(time = '2024-07-03', method = 'nearest').plot()
+ndvi.sel(time = '2024-07-04').plot()
+
+# Masking Clouds and Other Categories
+noe_filtered = ndvi.where(noe['SCL'].isin([4,5,6,11]))
+noe_filtered = evi.where(noe['SCL'].isin([4, 5, 6, 11]))
+noe_filtered = ndwi.where(noe['SCL'].isin([4, 5, 6, 11]))
+noe_filtered = nirv.where(noe['SCL'].isin([4, 5, 6, 11]))
+noe_filtered = chlrededge.where(noe['SCL'].isin([4, 5, 6, 11]))
+
+# Create a dataset to add more variables later
+noe_filtered = noe_filtered.to_dataset(name = "ndvi")
+
+# Adding other VIs in the datasets
+noe_filtered["EVI"] = evi_filtered
+noe_filtered['NDVI'] = ndvi_filtered
+noe_filtered['NDWI'] = ndwi_filtered
+noe_filtered['NIRv'] = nirv_filtered
+noe_filtered['ChlRedEdge'] = chlrededge_filtered
+
+# Creating a distance matrix form the EC tower
+from pyproj import CRS, Transformer
+from shapely.geometry import Point
+from shapely.ops import transform
+
+
+def wgs84_to_utm(point_coordinates):
+    """
+    Convert a bounding box from WGS84 to the most appropriate UTM CRS.
+
+    Parameters:
+    bbox (tuple): A tuple containing (min_lon, min_lat, max_lon, max_lat) in WGS84.
+
+    Returns:
+    dict: A dictionary containing the UTM coordinates and the UTM zone string.
+    """
+    lat = point_coordinates[0]
+    lon = point_coordinates[1]
+
+    # Calculate the central longitude of the bounding box
+
+    # Determine the UTM zone
+    utm_zone = int((lon + 180) / 6) + 1
+    hemisphere = 'north' if lat >= 0 else 'south'
+    utm_crs = f"EPSG:326{utm_zone}" if hemisphere == 'north' else f"EPSG:327{utm_zone}"
+
+    # Define the projections
+    
+    transformer = Transformer.from_crs("EPSG:4326", utm_crs)
+
+    # Convert the bounding box coordinates
+    x, y = transformer.transform(lat, lon)
+
+    # Return the UTM coordinates and the UTM CRS
+    return {
+        'utm_coords': (x, y),
+        'utm_crs': utm_crs
+    }
+
+
+# Setting lat and lon 
+tower_location = (40.6062, 8.1517)
+
+# Function to convert the lat lon coordinates into UTM
+tower_location_utm = wgs84_to_utm(tower_location)
+tower_location_utm
+
+import numpy as np
+
+# Create a dummy matrix to save the data
+dist_mat = np.zeros((len(noe_filtered.x.data), len(noe_filtered.y.data)))
+y = noe.y.data
+x = noe.x.data
+
+for la in range(len(y)):
+    for lo in range(len(x)):
+        dist_mat[la,lo] = np.sqrt((tower_location_utm['utm_coords'][1] - y[la])**2 + (tower_location_utm['utm_coords'][0] - x[lo])**2)
+
+# Plot
+plt.imshow(dist_mat)
+plt.colorbar()
+plt.show()
+
+# Adding distance matrix to the cube
+noe_filtered = noe_filtered.assign(distance_tower = (['y', 'x'], dist_mat))
+
+
+# Masking values, considering only 1 km radius
+noe_filtered_masked = noe_filtered.where(noe_filtered['distance_tower'] <= 1000)
+
+# Exoloring data
+noe_filtered_masked['ndvi'].sel(time = "2023-07-20").plot()
+
+# Using a threshold to compute the median or set as NaN
+noe_filtered_masked = noe_filtered_masked.where(noe_filtered_masked["ndvi"].count(dim = ["x", "y"])>=(noe_filtered_masked['distance_tower'].count().data * 50)/100)
+
+# Exploring data
+noe_filtered_masked['NDWI'].sel(time = "2023-07-20").plot()
+result = noe_filtered_masked["ndvi"].median(dim = ["x", "y"], skipna=True)
+result_df = result.to_dataframe()
+result_df
+result_df.to_csv(".../.csv")
+
