@@ -1,0 +1,121 @@
+install.packages(c("terra", "sf", "tidyverse"))
+library(terra)
+library(raster)
+library(pbapply)
+library(dplyr)
+library(tictoc)
+
+SPath <- "/Users/ariannalucarini/Desktop/FPC/output2/"
+OPath <- "/Users/ariannalucarini/Desktop/FPC/output_rasterized/"
+file_list <- dir_ls(SPath)
+
+date_list <- vector("character", length(file_list)) 
+
+tic()
+1:length(file_list)
+# Add a progress bar to your loop with pbapply
+for (i in 1:length(file_list)) {
+  print(i)
+  
+  
+  # Load the data file and extract the FPOut object
+  load(file_list[[i]])
+  
+  if (is.nan(sum(FPOut$fclim_2d))) {
+    next  # Skip the loop if there's NaN
+  }
+  
+  # Store the date from the file name
+  date_list[i] <- basename(file_list[[i]])
+  
+  # Check if FPOut and fclim_2d exist
+  if (!exists("FPOut") || !"fclim_2d" %in% names(FPOut)) {
+    message("Skipping file due to missing FPOut or fclim_2d")
+    next
+  }
+  
+  # Rasterize the matrix adding the x and y coordinates, the CRS, and the resolution
+  r0 <- rast(FPOut$fclim_2d)
+  utm_crs <- "EPSG:32630"
+  
+  x_center <- 263038.39364641
+  y_center <- 4424957.6303515
+  xmin <- x_center - 50
+  xmax <- x_center + 50
+  ymin <- y_center - 50
+  ymax <- y_center + 50
+  
+  # Define the footprint as a polygon
+  footprint <- vect(matrix(c(
+    xmin, ymin,
+    xmax, ymin,
+    xmax, ymax,
+    xmin, ymax,
+    xmin, ymin  # Close the polygon
+  ), ncol=2, byrow=TRUE), type="polygons", crs=utm_crs)  # Adjust CRS if needed
+  
+  # Set resolution for the raster
+  res_x <- 1
+  res_y <- 1
+  
+  # Create an empty raster with the desired extent and resolution
+  r_footprint <- rast(FPOut$fclim_2d, type="",ext(xmin, xmax, ymin, ymax),  crs = utm_crs)
+  
+  # Check if footprint is valid
+  if (nrow(FPOut$fclim_2d) == 0) {
+    message("Invalid footprint geometry, skipping this iteration")
+    next
+  }
+
+
+output_file <- file.path(OPath, paste0("footprint_", basename(file_list[[i]]), ".tif"))
+  writeRaster(r_footprint, output_file, overwrite=TRUE)
+  gc()
+  
+}
+
+toc()
+
+##############################################
+
+folder <- "/Users/ariannalucarini/Desktop/FPC/output_rasterized"
+
+tif_files <- list.files(folder, pattern = "\\.tif$", full.names = TRUE)
+
+stack <- rast(tif_files)
+
+names(stack) <- sub("footprint_FP_(\\d{12})\\.Rdata\\.tif", "\\1", basename(tif_files))
+
+print(names(stack)) 
+print(res(stack)) 
+
+resample_stack <- function(stack, new_resolution = 20) {
+ template_raster <- rast(ext(stack), res = new_resolution, crs = crs(stack))
+ resampled_stack <- resample(stack, template_raster, method = "bilinear")
+  
+  return(resampled_stack)
+}
+
+resampled_stack <- resample_stack(stack, new_resolution = 20)
+
+print(res(resampled_stack))  # Should show 20m resolution
+print(dim(resampled_stack))
+
+par(mfrow = c(1, 2))  # Set up the plotting area for two plots
+plot(stack[[1]], main = "Original Stack (1m) - Layer 1")
+plot(resampled_stack[[1]], main = "Resampled Stack (20m) - Layer 1")
+
+writeRaster(resampled_stack, "/Users/ariannalucarini/Desktop/FPC/output_resampled_stack_20m.tif", format = "GTiff", bylayer = TRUE)
+
+output_dir <- "/Users/ariannalucarini/Desktop/FPC/output_resampled"
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir)
+}
+
+for (i in 1:nlyr(resampled_stack)) {
+  # Generate the output file path
+  output_file <- paste0(output_dir, "resampled_layer_", i, ".tif")
+  
+  # Write the layer as a GeoTIFF
+  writeRaster(resampled_stack[[i]], output_file, overwrite = TRUE)
+}
