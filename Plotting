@@ -1,0 +1,102 @@
+#### Pulizia e setup iniziale ####
+rm(list=ls())
+gc()
+Sys.setenv(TZ = 'UTC')
+
+#### Librerie necessarie ####
+library(lubridate)
+library(RgoogleMaps)
+library(sp)
+library(rgdal)
+library(sf)
+library(raster)
+
+#### Impostazioni iniziali ####
+input_dir <- "/Users/ariannalucarini/Desktop/FPC/output2/"
+MapExt <- c(39.93, -5.785, 39.945, -5.765)
+MapExMT <- c(39.939, -5.777, 39.941, -5.773)
+CT <- c(39.940311, -5.774639)  # Coordinate torre
+
+#### Funzione: converti coordinate torre in UTM ####
+TowCoords_2_UTM <- function(TowCoord) {
+  xy <- data.frame(ID = 1, X = TowCoord[2], Y = TowCoord[1])
+  coordinates(xy) <- c("X", "Y")
+  proj4string(xy) <- CRS("+proj=longlat +datum=WGS84 +no_defs")
+  TC_UTM <- spTransform(xy, CRS("+proj=utm +zone=30"))
+  return(TC_UTM)
+}
+
+#### Funzione: genera la mappa del footprint ####
+FP2MapConv <- function(TCUTM, FP, IsoLineNo, MapExt) {
+  Isodf10 <- data.frame(
+    'x' = FP$xr[[IsoLineNo]] + TCUTM@coords[1],
+    'y' = FP$yr[[IsoLineNo]] + TCUTM@coords[2]
+  )
+  NAIDX <- which(is.na(Isodf10$x))
+  if (length(NAIDX) >= 1) Isodf10 <- Isodf10[-NAIDX,]
+  if (nrow(Isodf10) == 0) stop("❌ Nessun punto valido in FP$xr / FP$yr")
+  
+  Iso10Points <- SpatialPoints(coords = Isodf10, proj4string = CRS("+proj=utm +zone=30 +datum=WGS84"))
+  Iso10EPSG <- spTransform(Iso10Points, CRSobj = CRS("+proj=longlat +datum=WGS84 +no_defs"))
+  Iso10EPSG@bbox <- matrix(c(MapExt[2], MapExt[1], MapExt[4], MapExt[3]), nrow = 2, ncol = 2)
+  return(Iso10EPSG)
+}
+
+#### Conversione coordinate torre ####
+NTUTM <- TowCoords_2_UTM(CT)
+TowerCoord <- data.frame('long' = CT[2], 'lat' = CT[1])
+TowerPoints <- SpatialPoints(coords = TowerCoord, proj4string = CRS("+proj=longlat +datum=WGS84 +no_defs"))
+
+#### Caricamento dei file footprint ####
+rdata_files <- list.files(path = input_dir, pattern = "^FP_.*\\.Rdata$", full.names = TRUE, ignore.case = TRUE)
+FP_list <- list()
+
+for (f in rdata_files) {
+  env <- new.env()
+  load(f, envir = env)
+  obj_name <- ls(env)[1]
+  FP_obj <- env[[obj_name]]
+  
+  # Check se valido
+  if (!is.null(FP_obj$xr) && length(FP_obj$xr) > 0 && length(FP_obj$xr[[1]]) > 0) {
+    FP_list[[basename(f)]] <- FP_obj
+  }
+}
+
+cat("✅ Footprint validi caricati:", length(FP_list), "\n")
+
+#### Seleziona un esempio valido e plottalo ####
+if (length(FP_list) > 0) {
+  FP_example <- FP_list[[1]]  # puoi sostituire con un nome specifico
+  NTIso10 <- FP2MapConv(TCUTM = NTUTM, FP = FP_example, IsoLineNo = 1, MapExt)
+  
+  png('FP_example_plot.png')
+  MapInfo <- GetBingMap(
+    mapArea = MapExMT,
+    size = c(640, 640),
+    destfile = "FP_example_plot.png",
+    zoom = 12,
+    format = "png",
+    maptype = "AerialWithLabels",
+    RETURNIMAGE = TRUE,
+    GRAYSCALE = FALSE,
+    NEWMAP = TRUE,
+    apiKey = "AiCLSwM9jpYimcJnLKiPdmVWk0mgImggNPZvQMHhZ2lZQEAaS0mW-lYDf3uk0Pdm"
+  )
+  
+  PlotOnStaticMap(MyMap = MapInfo,
+                  lon = TowerPoints@coords[, 1],
+                  lat = TowerPoints@coords[, 2],
+                  TrueProj = TRUE, pch = 20, col = "blue")
+  
+  PlotOnStaticMap(MyMap = MapInfo, add = TRUE,
+                  lon = NTIso10@coords[, 1],
+                  lat = NTIso10@coords[, 2],
+                  TrueProj = TRUE, col = "red", cex = 0.2, type = 'l', lwd = 2)
+  
+  dev.off()
+  cat("✅ Plot salvato come 'FP_example_plot.png'\n")
+} else {
+  cat("❌ Nessun footprint valido da plottare.\n")
+}
+
